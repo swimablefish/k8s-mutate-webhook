@@ -4,16 +4,76 @@ package mutate
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
-	"log"
-
 	v1beta1 "k8s.io/api/admission/v1beta1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
+	"log"
 )
 
+func mutateDaemonSetPod(clientSet *kubernetes.Clientset, pod *corev1.Pod, patch []map[string]string, verbose bool) {
+	ownerReferences := pod.ObjectMeta.OwnerReferences
+	if ownerReferences != nil && len(ownerReferences) > 0 {
+		if verbose {
+			log.Printf("owner references type: %s\n", ownerReferences[0].Kind)
+		}
+
+		if ownerReferences[0].Kind == "DaemonSet" {
+			nodeName, err := getNodeNameFromPod(pod)
+			if err != nil {
+				log.Printf("Can't find the node the pod(%s/%s) will run, %v", pod.ObjectMeta.Namespace, pod.ObjectMeta.Name, err)
+				return
+			}
+			if verbose {
+				log.Printf("node name: %s\n", nodeName)
+				log.Printf("scheduler name: %s\n", pod.Spec.SchedulerName)
+			}
+			node, err := clientSet.CoreV1().Nodes().Get(nodeName, metav1.GetOptions{})
+			if err != nil {
+				return
+			}
+			if val, ok := node.Labels["visenze.component"]; ok {
+				// do mutation
+				log.Printf("found the label, the values is %s", val)
+			}
+		}
+	}
+}
+
+func getNodeNameFromPod(pod *corev1.Pod) (string, error) {
+	// "affinity":{
+	//               "nodeAffinity":{
+	//                  "requiredDuringSchedulingIgnoredDuringExecution":{
+	//                     "nodeSelectorTerms":[
+	//                        {
+	//                           "matchFields":[
+	//                              {
+	//                                 "key":"metadata.name",
+	//                                 "operator":"In",
+	//                                 "values":[
+	//                                    "ip-10-0-1-156.us-west-2.compute.internal"
+	//                                 ]
+	//                              }
+	//                           ]
+	//                        }
+	//                     ]
+	//                  }
+
+	for _, t := range pod.Spec.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms {
+		for _, f := range t.MatchFields {
+			if f.Key == "metadata.name" {
+				return f.Values[0], nil
+			}
+		}
+	}
+
+	return "", errors.New("can't find the node for the ds pod")
+}
+
 // Mutate mutates
-func Mutate(body []byte, verbose bool) ([]byte, error) {
+func Mutate(body []byte, verbose bool, clientSet *kubernetes.Clientset) ([]byte, error) {
 	if verbose {
 		log.Printf("recv: %s\n", string(body)) // untested section
 	}
@@ -43,22 +103,19 @@ func Mutate(body []byte, verbose bool) ([]byte, error) {
 		pT := v1beta1.PatchTypeJSONPatch
 		resp.PatchType = &pT // it's annoying that this needs to be a pointer as you cannot give a pointer to a constant?
 
-		// add some audit annotations, helpful to know why a object was modified, maybe (?)
-		resp.AuditAnnotations = map[string]string{
-			"mutateme": "yup it did it",
-		}
-
 		// the actual mutation is done by a string in JSONPatch style, i.e. we don't _actually_ modify the object, but
 		// tell K8S how it should modifiy it
 		p := []map[string]string{}
-		for i := range pod.Spec.Containers {
-			patch := map[string]string{
-				"op":    "replace",
-				"path":  fmt.Sprintf("/spec/containers/%d/image", i),
-				"value": "debian",
-			}
-			p = append(p, patch)
-		}
+		mutateDaemonSetPod(clientSet, pod, p, verbose)
+		log.Printf("%v", p)
+		//for i := range pod.Spec.Containers {
+		//	patch := map[string]string{
+		//		"op":    "replace",
+		//		"path":  fmt.Sprintf("/spec/containers/%d/image", i),
+		//		"value": "debian",
+		//	}
+		//	p = append(p, patch)
+		//}
 		// parse the []map into JSON
 		resp.Patch, err = json.Marshal(p)
 
