@@ -8,8 +8,12 @@ import (
 	"net/http"
 	"time"
 
-	m "github.com/alex-leonhardt/k8s-mutate-webhook/pkg/mutate"
+	m "github.com/swimablefish/k8s-mutate-webhook/pkg/mutate"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 )
+
+var clientSet *kubernetes.Clientset;
 
 func handleRoot(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "hello %q", html.EscapeString(r.URL.Path))
@@ -26,7 +30,7 @@ func handleMutate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// mutate the request
-	mutated, err := m.Mutate(body, true)
+	mutated, err := m.Mutate(body, true, clientSet)
 	if err != nil {
 		sendError(err, w)
 		return
@@ -44,6 +48,15 @@ func sendError(err error, w http.ResponseWriter) {
 }
 
 func main() {
+	log.Println("Init k8s client ...")
+	config, err := rest.InClusterConfig()
+	if err != nil {
+		panic(err.Error())
+	}
+	clientSet, err = kubernetes.NewForConfig(config)
+	if err != nil {
+		panic(err.Error())
+	}
 	log.Println("Starting server ...")
 
 	mux := http.NewServeMux()
